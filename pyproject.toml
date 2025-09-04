@@ -8,5 +8,3 @@ dependencies = [
     "pillow>=10.2.0"
 ]
 
-[tool.uv]
-python = "3.13"
