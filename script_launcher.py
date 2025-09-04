@@ -7,6 +7,7 @@ import json
 from tkinter import filedialog
 import threading
 import queue
+import sys
 
 class ScriptLauncher(ctk.CTk):
     def __init__(self):
@@ -192,15 +193,48 @@ class ScriptLauncher(ctk.CTk):
 
         self.update_control_buttons()
 
+    def _find_venv_root(self, script_path: Path) -> Path | None:
+        """從腳本位置向上搜尋最多10層，尋找 venv 或 .venv 目錄。"""
+        current_dir = script_path.parent
+        for _ in range(10):
+            if (current_dir / "venv").is_dir() or (current_dir / ".venv").is_dir():
+                return current_dir
+
+            # If we've reached the root, stop.
+            if current_dir.parent == current_dir:
+                return None
+
+            current_dir = current_dir.parent
+
+        return None
+
     def _execute_script_worker(self, script_path_str: str):
         """[Worker Thread] 執行腳本，並將輸出傳遞到佇列。"""
         try:
-            command = [
-                "powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script_path_str
-            ] if script_path_str.endswith(".ps1") else [script_path_str]
+            script_path = Path(script_path_str)
+            command = []
+            cwd = None
+
+            if script_path.suffix == ".py":
+                venv_root = self._find_venv_root(script_path)
+                if venv_root:
+                    self.log_queue.put(f"找到虛擬環境: {venv_root}，使用 uv run 執行...\n")
+                    command = ["uv", "run", "python", script_path_str]
+                    cwd = venv_root
+                else:
+                    self.log_queue.put(f"警告: 找不到虛擬環境，將使用系統 Python ({sys.executable}) 執行...\n")
+                    command = [sys.executable, script_path_str]
+                    cwd = script_path.parent
+            elif script_path.suffix == ".ps1":
+                command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script_path_str]
+                cwd = script_path.parent
+            else: # .bat and others
+                command = [script_path_str]
+                cwd = script_path.parent
 
             process = subprocess.Popen(
                 command,
+                cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -329,7 +363,13 @@ class AddScriptWindow(ctk.CTkToplevel):
     def browse_file(self):
         filepath = filedialog.askopenfilename(
             title="選擇一個腳本檔案",
-            filetypes=(("Batch and PowerShell", "*.bat *.ps1"), ("All files", "*.*"))
+            filetypes=(
+                ("Scripts", "*.py *.bat *.ps1"),
+                ("Python Scripts", "*.py"),
+                ("Batch Files", "*.bat"),
+                ("PowerShell Scripts", "*.ps1"),
+                ("All files", "*.*")
+            )
         )
         if filepath:
             self.path_entry.configure(state="normal")
