@@ -1,0 +1,21 @@
+# Ignore IDE and editor directories
+.idea/
+.windsurfrules
+
+# Ignore Python virtual environments
+.venv/
+
+# Ignore Node.js modules
+node_modules/
+
+# Ignore other common development directories
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+
+# Ignore OS generated files
+*.swp
+*.swo
+*.swn

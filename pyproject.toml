@@ -1,0 +1,12 @@
+[project]
+name = "script-launcher"
+version = "0.1.0"
+description = "Windows Script Launcher GUI"
+requires-python = ">=3.13"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "pillow>=10.2.0"
+]
+
+[tool.uv]
+python = "3.13"
