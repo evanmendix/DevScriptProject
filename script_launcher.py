@@ -86,13 +86,18 @@ class ScriptLauncher(ctk.CTk):
         self.process_log_queue() # Start queue listener
         # --- End Config and State ---
 
-    def open_add_script_window(self):
+    def open_add_script_window(self, script_to_edit: Dict | None = None):
         """開啟用於新增/編輯腳本的彈出視窗。"""
         if self.add_script_window is None or not self.add_script_window.winfo_exists():
-            self.add_script_window = AddScriptWindow(master=self)
+            self.add_script_window = AddScriptWindow(master=self, script_to_edit=script_to_edit)
             self.add_script_window.grab_set()
         else:
             self.add_script_window.focus()
+
+    def _on_edit_button_click(self):
+        """Called when the 'Edit' button is clicked."""
+        if self.selected_script:
+            self.open_add_script_window(script_to_edit=self.selected_script)
 
     def load_or_create_config(self):
         """載入 scripts.json 設定檔，若不存在則建立。"""
@@ -105,14 +110,8 @@ class ScriptLauncher(ctk.CTk):
                 self.save_config()
                 self.show_error("設定檔 'scripts.json' 毀損或格式錯誤，已重設。")
         else:
-            # 如果檔案不存在，用一個範例腳本建立它
-            self.scripts_config = [
-                {
-                    "name": "範例: 檢查 WiFi (一次性)",
-                    "path": str(Path("windows/network/check_wifi2.bat").absolute()),
-                    "type": "one-time"
-                }
-            ]
+            # If the file doesn't exist, create an empty one.
+            self.scripts_config = []
             self.save_config()
 
     def save_config(self):
@@ -191,8 +190,8 @@ class ScriptLauncher(ctk.CTk):
         if script_type == 'one-time':
             # Disable button if any script is running to prevent conflicts
             is_any_script_running = bool(self.running_processes)
-            run_button = ctk.CTkButton(self, text="執行", command=self.start_script_execution, state="disabled" if is_any_script_running else "normal")
-            run_button.pack(in_=self.button_frame, side="left", padx=5)
+            run_button = ctk.CTkButton(self.button_frame, text="執行", command=self.start_script_execution, state="disabled" if is_any_script_running else "normal")
+            run_button.pack(side="left", padx=5)
             if is_any_script_running:
                 self.create_tooltip(run_button, "已有背景腳本在執行中，無法執行一次性腳本。")
 
@@ -204,7 +203,9 @@ class ScriptLauncher(ctk.CTk):
                 start_button = ctk.CTkButton(self.button_frame, text="啟動", command=self.start_script_execution, fg_color="#388E3C")
                 start_button.pack(side="left", padx=5)
 
-        # Add rename button if a script is selected
+        # Add rename and edit buttons if a script is selected
+        edit_button = ctk.CTkButton(self.button_frame, text="編輯", command=self._on_edit_button_click, fg_color="gray")
+        edit_button.pack(side="right", padx=5)
         rename_button = ctk.CTkButton(self.button_frame, text="重新命名", command=self._on_rename_button_click, fg_color="gray")
         rename_button.pack(side="right", padx=5)
 
@@ -402,11 +403,16 @@ class ScriptLauncher(ctk.CTk):
 # 新增/編輯腳本的彈出視窗
 # ==============================================================================
 class AddScriptWindow(ctk.CTkToplevel):
-    def __init__(self, master):
+    def __init__(self, master, script_to_edit: Dict | None = None):
         super().__init__(master)
         self.master_app = master
+        self.script_to_edit = script_to_edit
+        self.mode = "edit" if self.script_to_edit else "add"
 
-        self.title("新增腳本")
+        if self.mode == "edit":
+            self.title("編輯腳本")
+        else:
+            self.title("新增腳本")
         self.geometry("500x300")
 
         self.grid_columnconfigure(1, weight=1)
@@ -441,6 +447,15 @@ class AddScriptWindow(ctk.CTkToplevel):
         self.cancel_button = ctk.CTkButton(self.button_frame, text="取消", command=self.destroy, fg_color="gray")
         self.cancel_button.pack(side="left", padx=10)
 
+        # Pre-fill fields if in edit mode
+        if self.mode == "edit" and self.script_to_edit:
+            self.path_entry.configure(state="normal")
+            self.path_entry.insert(0, self.script_to_edit.get("path", ""))
+            self.path_entry.configure(state="disabled")
+            self.browse_button.configure(state="disabled")
+            self.name_entry.insert(0, self.script_to_edit.get("name", ""))
+            self.type_menu.set(self.script_to_edit.get("type", "one-time"))
+
     def browse_file(self):
         filepath = filedialog.askopenfilename(
             title="選擇一個腳本檔案",
@@ -470,13 +485,22 @@ class AddScriptWindow(ctk.CTkToplevel):
             self.master_app.show_error("錯誤：腳本路徑和顯示名稱不能為空。")
             return
 
-        new_script = {
-            "name": name,
-            "path": path,
-            "type": script_type
-        }
+        if self.mode == "add":
+            new_script = {
+                "name": name,
+                "path": path,
+                "type": script_type
+            }
+            self.master_app.scripts_config.append(new_script)
+        else:  # Edit mode
+            original_path = self.script_to_edit.get("path")
+            for script in self.master_app.scripts_config:
+                if script.get("path") == original_path:
+                    script["name"] = name
+                    script["type"] = script_type
+                    # Path is not editable, so we don't update it
+                    break
 
-        self.master_app.scripts_config.append(new_script)
         self.master_app.save_config()
         # Destroy the window *before* refreshing the main UI to avoid race conditions
         self.destroy()
