@@ -251,8 +251,7 @@ class ScriptLauncher(ctk.CTk):
 
         dialog = CTkInputDialog(
             text="請輸入新的腳本名稱:",
-            title="重新命名腳本",
-            entry_text=self.selected_script.get("name")
+            title="重新命名腳本"
         )
         new_name = dialog.get_input()
 
@@ -479,8 +478,9 @@ class AddScriptWindow(ctk.CTkToplevel):
 
         self.master_app.scripts_config.append(new_script)
         self.master_app.save_config()
-        self.master_app.populate_scripts_ui()
+        # Destroy the window *before* refreshing the main UI to avoid race conditions
         self.destroy()
+        self.master_app.populate_scripts_ui()
 
 
 if __name__ == "__main__":
