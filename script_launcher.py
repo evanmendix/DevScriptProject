@@ -5,6 +5,7 @@ from typing import Dict, List
 from pathlib import Path
 import json
 from tkinter import filedialog
+from customtkinter import CTkInputDialog
 import threading
 import queue
 import sys
@@ -26,9 +27,34 @@ class ScriptLauncher(ctk.CTk):
         self.grid_columnconfigure(1, weight=5) # Control/Output pane (wider)
         self.grid_rowconfigure(0, weight=1)
 
-        # Left Pane: Script List
-        self.script_list_frame = ctk.CTkScrollableFrame(self, label_text="腳本列表")
-        self.script_list_frame.grid(row=0, column=0, padx=(10, 0), pady=10, sticky="nsew")
+        # --- Left Pane ---
+        self.left_pane = ctk.CTkFrame(self, fg_color="transparent")
+        self.left_pane.grid(row=0, column=0, padx=(10, 0), pady=10, sticky="nsew")
+        self.left_pane.grid_rowconfigure(1, weight=1)
+        self.left_pane.grid_columnconfigure(0, weight=1)
+
+        # Filter and Search Frame
+        self.filter_frame = ctk.CTkFrame(self.left_pane)
+        self.filter_frame.grid(row=0, column=0, padx=0, pady=(0, 10), sticky="ew")
+        self.filter_frame.grid_columnconfigure(0, weight=1)
+
+        self.search_entry = ctk.CTkEntry(self.filter_frame, placeholder_text="搜尋...")
+        self.search_entry.grid(row=0, column=0, padx=(0,10), pady=5, sticky="ew")
+
+        self.filter_var = ctk.StringVar(value="ALL")
+        self.filter_button = ctk.CTkSegmentedButton(
+            self.filter_frame,
+            values=["ALL", "PY", "BAT", "PS1"],
+            variable=self.filter_var,
+            command=self._on_search_filter_change
+        )
+        self.filter_button.grid(row=0, column=1, padx=0, pady=5)
+
+        self.search_entry.bind("<KeyRelease>", self._on_search_filter_change)
+
+        # Script List Frame (inside the left pane)
+        self.script_list_frame = ctk.CTkScrollableFrame(self.left_pane, label_text="腳本列表")
+        self.script_list_frame.grid(row=1, column=0, sticky="nsew")
         self.script_list_frame.grid_columnconfigure(0, weight=1)
 
         # Right Pane: Control and Output
@@ -54,7 +80,7 @@ class ScriptLauncher(ctk.CTk):
         self.add_script_window = None
         self.log_queue = queue.Queue()
         self.running_processes: Dict[str, subprocess.Popen] = {}
-        
+
         self.load_or_create_config()
         self.populate_scripts_ui()
         self.process_log_queue() # Start queue listener
@@ -95,17 +121,39 @@ class ScriptLauncher(ctk.CTk):
             json.dump(self.scripts_config, f, indent=4, ensure_ascii=False)
 
     def populate_scripts_ui(self):
-        """根據設定檔內容，在左側列表中填入腳本按鈕。"""
-        # 清除舊的 widgets
+        """根據搜尋和篩選條件，在左側列表中填入腳本按鈕。"""
+        # 1. Get filter values
+        search_term = self.search_entry.get().lower()
+        filter_type = self.filter_var.get()
+
+        # 2. Filter the scripts
+        filtered_scripts = []
+        for script in self.scripts_config:
+            # Check filter type
+            type_match = False
+            if filter_type == "ALL":
+                type_match = True
+            else:
+                suffix = "." + filter_type.lower()
+                if script.get("path", "").lower().endswith(suffix):
+                    type_match = True
+
+            # Check search term
+            name_match = False
+            if search_term in script.get("name", "").lower():
+                name_match = True
+
+            if type_match and name_match:
+                filtered_scripts.append(script)
+
+        # 3. Display the filtered list
         for widget in self.script_list_frame.winfo_children():
             widget.destroy()
 
-        # 新增 "新增腳本" 按鈕
         add_button = ctk.CTkButton(self.script_list_frame, text="＋ 新增腳本", command=self.open_add_script_window)
         add_button.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
-        # 為每個腳本加入按鈕
-        for i, script_data in enumerate(self.scripts_config, start=1):
+        for i, script_data in enumerate(filtered_scripts, start=1):
             name = script_data.get("name", "未命名腳本")
             button = ctk.CTkButton(
                 self.script_list_frame,
@@ -113,7 +161,7 @@ class ScriptLauncher(ctk.CTk):
                 command=lambda s=script_data: self.select_script(s)
             )
             button.grid(row=i, column=0, padx=10, pady=5, sticky="ew")
-            
+
             tooltip_text = f"路徑: {script_data.get('path', 'N/A')}\n類型: {script_data.get('type', 'N/A')}"
             self.create_tooltip(button, tooltip_text)
 
@@ -156,6 +204,10 @@ class ScriptLauncher(ctk.CTk):
                 start_button = ctk.CTkButton(self.button_frame, text="啟動", command=self.start_script_execution, fg_color="#388E3C")
                 start_button.pack(side="left", padx=5)
 
+        # Add rename button if a script is selected
+        rename_button = ctk.CTkButton(self.button_frame, text="重新命名", command=self._on_rename_button_click, fg_color="gray")
+        rename_button.pack(side="right", padx=5)
+
     def start_script_execution(self):
         """在一個新的執行緒中啟動所選的腳本。"""
         if not self.selected_script:
@@ -192,6 +244,36 @@ class ScriptLauncher(ctk.CTk):
                 self.log_queue.put(f"\n--- 腳本 {self.selected_script.get('name')} 已終止 (taskkill失敗) ---\n")
 
         self.update_control_buttons()
+
+    def _on_rename_button_click(self):
+        if not self.selected_script:
+            return
+
+        dialog = CTkInputDialog(
+            text="請輸入新的腳本名稱:",
+            title="重新命名腳本",
+            entry_text=self.selected_script.get("name")
+        )
+        new_name = dialog.get_input()
+
+        if new_name and new_name.strip():
+            new_name = new_name.strip()
+            script_path = self.selected_script.get("path")
+
+            for script in self.scripts_config:
+                if script.get("path") == script_path:
+                    script["name"] = new_name
+                    break
+
+            self.save_config()
+            self.selected_script["name"] = new_name
+
+            self.populate_scripts_ui()
+            self.selected_script_label.configure(text=new_name)
+
+    def _on_search_filter_change(self, event=None):
+        """Called when search or filter changes. Refreshes the script list."""
+        self.populate_scripts_ui()
 
     def _find_venv_root(self, script_path: Path) -> Path | None:
         """從腳本位置向上搜尋最多10層，尋找 venv 或 .venv 目錄。"""
