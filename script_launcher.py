@@ -203,11 +203,15 @@ class ScriptLauncher(ctk.CTk):
                 start_button = ctk.CTkButton(self.button_frame, text="啟動", command=self.start_script_execution, fg_color="#388E3C")
                 start_button.pack(side="left", padx=5)
 
-        # Add rename and edit buttons if a script is selected
+        # Add management buttons on the left
         edit_button = ctk.CTkButton(self.button_frame, text="編輯", command=self._on_edit_button_click, fg_color="gray")
-        edit_button.pack(side="right", padx=5)
+        edit_button.pack(side="left", padx=10)
         rename_button = ctk.CTkButton(self.button_frame, text="重新命名", command=self._on_rename_button_click, fg_color="gray")
-        rename_button.pack(side="right", padx=5)
+        rename_button.pack(side="left", padx=5)
+
+        # Add destructive button on the far right
+        delete_button = ctk.CTkButton(self.button_frame, text="移除", command=self._on_delete_button_click, fg_color="#D32F2F")
+        delete_button.pack(side="right", padx=5)
 
     def start_script_execution(self):
         """在一個新的執行緒中啟動所選的腳本。"""
@@ -270,6 +274,49 @@ class ScriptLauncher(ctk.CTk):
 
             self.populate_scripts_ui()
             self.selected_script_label.configure(text=new_name)
+
+    def _on_delete_button_click(self):
+        if not self.selected_script:
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("確認移除")
+        dialog.geometry("350x150")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        result = {"confirmed": False}
+
+        def confirm():
+            result["confirmed"] = True
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        label = ctk.CTkLabel(dialog, text=f"您確定要移除腳本 '{self.selected_script.get('name')}' 嗎？\n此操作無法復原。", wraplength=300)
+        label.pack(padx=20, pady=20)
+
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.pack(pady=10)
+
+        no_button = ctk.CTkButton(button_frame, text="取消", command=cancel)
+        no_button.pack(side="left", padx=10)
+        yes_button = ctk.CTkButton(button_frame, text="確定移除", command=confirm, fg_color="#D32F2F")
+        yes_button.pack(side="left", padx=10)
+
+        self.wait_window(dialog)
+
+        if result["confirmed"]:
+            path_to_remove = self.selected_script.get("path")
+            self.scripts_config = [s for s in self.scripts_config if s.get("path") != path_to_remove]
+            self.save_config()
+
+            self.selected_script = None
+            self.populate_scripts_ui()
+            self.update_control_buttons()
+            self.selected_script_label.configure(text="請從左側選擇一個腳本")
+            self.update_console_output("", clear=True)
 
     def _on_search_filter_change(self, event=None):
         """Called when search or filter changes. Refreshes the script list."""
@@ -409,6 +456,10 @@ class AddScriptWindow(ctk.CTkToplevel):
         self.script_to_edit = script_to_edit
         self.mode = "edit" if self.script_to_edit else "add"
 
+        # --- Type Mapping ---
+        self.type_display_map = {"one-time": "一次性", "background": "背景常駐"}
+        self.type_internal_map = {v: k for k, v in self.type_display_map.items()}
+
         if self.mode == "edit":
             self.title("編輯腳本")
         else:
@@ -435,7 +486,7 @@ class AddScriptWindow(ctk.CTkToplevel):
         # 腳本類型
         self.type_label = ctk.CTkLabel(self, text="腳本類型:")
         self.type_label.grid(row=2, column=0, padx=20, pady=10, sticky="w")
-        self.type_menu = ctk.CTkOptionMenu(self, values=["one-time", "background"])
+        self.type_menu = ctk.CTkOptionMenu(self, values=list(self.type_display_map.values()))
         self.type_menu.grid(row=2, column=1, columnspan=2, padx=20, pady=10, sticky="w")
 
         # 控制按鈕
@@ -454,7 +505,10 @@ class AddScriptWindow(ctk.CTkToplevel):
             self.path_entry.configure(state="disabled")
             self.browse_button.configure(state="disabled")
             self.name_entry.insert(0, self.script_to_edit.get("name", ""))
-            self.type_menu.set(self.script_to_edit.get("type", "one-time"))
+
+            stored_type = self.script_to_edit.get("type", "one-time")
+            display_type = self.type_display_map.get(stored_type, "一次性")
+            self.type_menu.set(display_type)
 
     def browse_file(self):
         filepath = filedialog.askopenfilename(
@@ -479,7 +533,8 @@ class AddScriptWindow(ctk.CTkToplevel):
     def save_script(self):
         path = self.path_entry.get()
         name = self.name_entry.get()
-        script_type = self.type_menu.get()
+        display_type = self.type_menu.get()
+        script_type = self.type_internal_map.get(display_type)
 
         if not path or not name:
             self.master_app.show_error("錯誤：腳本路徑和顯示名稱不能為空。")
