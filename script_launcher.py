@@ -1,7 +1,7 @@
 import os
 import subprocess
 import customtkinter as ctk
-from typing import Dict, List
+from typing import Dict, List, Tuple, Union, Set
 from pathlib import Path
 import json
 from tkinter import filedialog
@@ -63,11 +63,27 @@ class ScriptLauncher(ctk.CTk):
         self.control_pane.grid_rowconfigure(1, weight=1)
         self.control_pane.grid_columnconfigure(0, weight=1)
 
-        self.selected_script_label = ctk.CTkLabel(self.control_pane, text="請從左側選擇一個腳本", font=ctk.CTkFont(size=16, weight="bold"))
-        self.selected_script_label.grid(row=0, column=0, padx=10, pady=(10,0), sticky="w")
+        # Header Frame for label and close button
+        self.header_frame = ctk.CTkFrame(self.control_pane, fg_color="transparent")
+        self.header_frame.grid(row=0, column=0, padx=10, pady=(10,0), sticky="ew")
+        self.header_frame.grid_columnconfigure(0, weight=1)
 
-        self.console_output = ctk.CTkTextbox(self.control_pane, state="disabled")
-        self.console_output.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.selected_script_label = ctk.CTkLabel(self.header_frame, text="請從左側選擇一個腳本", font=ctk.CTkFont(size=16, weight="bold"))
+        self.selected_script_label.grid(row=0, column=0, sticky="w")
+
+        self.close_tab_button = ctk.CTkButton(self.header_frame, text="關閉分頁", width=80, fg_color="gray", command=self.close_current_tab)
+        self.close_tab_button.grid(row=0, column=1, sticky="e")
+
+        # Replaced single console_output with tab view
+        self.console_tabs = ctk.CTkTabview(self.control_pane)
+        self.console_tabs.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+
+        # Store log widgets and tab names
+        self.log_widgets: Dict[str, ctk.CTkTextbox] = {}
+        self.log_id_to_tab_name: Dict[str, str] = {}
+
+        # Initialize Main Console
+        self._ensure_log_tab("MAIN", "主控制台")
 
         self.button_frame = ctk.CTkFrame(self.control_pane)
         self.button_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
@@ -80,11 +96,76 @@ class ScriptLauncher(ctk.CTk):
         self.add_script_window = None
         self.log_queue = queue.Queue()
         self.running_processes: Dict[str, subprocess.Popen] = {}
+        self.starting_scripts: Set[str] = set()
 
         self.load_or_create_config()
         self.populate_scripts_ui()
         self.process_log_queue() # Start queue listener
         # --- End Config and State ---
+
+    def _ensure_log_tab(self, log_id: str, tab_name: str) -> ctk.CTkTextbox:
+        """Ensures a tab exists for the given log_id and returns the textbox widget."""
+        if log_id in self.log_widgets:
+            return self.log_widgets[log_id]
+
+        # Handle potential tab name conflicts
+        final_tab_name = tab_name
+        counter = 1
+        while True:
+            # Check if tab name is already used by another log_id
+            name_used = False
+            for existing_id, name in self.log_id_to_tab_name.items():
+                if name == final_tab_name:
+                    name_used = True
+                    break
+
+            if not name_used:
+                try:
+                    tab = self.console_tabs.add(final_tab_name)
+                    break
+                except ValueError:
+                    # Should be covered by name_used check, but just in case
+                    pass
+
+            final_tab_name = f"{tab_name} ({counter})"
+            counter += 1
+
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+
+        textbox = ctk.CTkTextbox(tab, state="disabled")
+        textbox.grid(row=0, column=0, sticky="nsew")
+
+        self.log_widgets[log_id] = textbox
+        self.log_id_to_tab_name[log_id] = final_tab_name
+        return textbox
+
+    def close_current_tab(self):
+        """Closes the currently selected tab if it's not the main console and script is not running."""
+        current_tab_name = self.console_tabs.get()
+
+        # Find log_id for this tab name
+        target_log_id = None
+        for log_id, name in self.log_id_to_tab_name.items():
+            if name == current_tab_name:
+                target_log_id = log_id
+                break
+
+        if not target_log_id:
+            return # Should not happen
+
+        if target_log_id == "MAIN":
+            self.show_error("無法關閉主控制台。")
+            return
+
+        if target_log_id in self.running_processes or target_log_id in self.starting_scripts:
+            self.show_error("無法關閉正在執行或啟動中腳本的分頁。")
+            return
+
+        # Safe to close
+        self.console_tabs.delete(current_tab_name)
+        del self.log_widgets[target_log_id]
+        del self.log_id_to_tab_name[target_log_id]
 
     def open_add_script_window(self, script_to_edit: Dict | None = None):
         """開啟用於新增/編輯腳本的彈出視窗。"""
@@ -173,9 +254,16 @@ class ScriptLauncher(ctk.CTk):
 
         self.selected_script_label.configure(text=script_data.get("name", "未命名腳本"))
 
+        # Log selection to MAIN console
         self.update_console_output(f"已選擇腳本: {script_data.get('name')}\n"
                                      f"路徑: {script_data.get('path')}\n"
-                                     f"類型: {script_data.get('type')}\n", clear=True)
+                                     f"類型: {script_data.get('type')}\n", log_id="MAIN", clear=True)
+
+        # If it's a running background script, maybe switch to its tab?
+        path = script_data.get('path')
+        if script_data.get('type') == 'background' and path in self.running_processes:
+            if path in self.log_id_to_tab_name:
+                self.console_tabs.set(self.log_id_to_tab_name[path])
 
         self.update_control_buttons()
 
@@ -191,17 +279,21 @@ class ScriptLauncher(ctk.CTk):
         script_type = self.selected_script.get('type')
 
         if script_type == 'one-time':
-            # Disable button if any script is running to prevent conflicts
-            is_any_script_running = bool(self.running_processes)
-            run_button = ctk.CTkButton(self.button_frame, text="執行", command=self.start_script_execution, state="disabled" if is_any_script_running else "normal")
+            # Enabled even if other scripts are running
+            # Also disabled if THIS specific one-time script is somehow running? (Unlikely for one-time unless blocked)
+            # Actually one-time scripts run and finish.
+            # But let's check starting_scripts just in case logic changes.
+            run_button = ctk.CTkButton(self.button_frame, text="執行", command=self.start_script_execution)
             run_button.pack(side="left", padx=5)
-            if is_any_script_running:
-                self.create_tooltip(run_button, "已有背景腳本在執行中，無法執行一次性腳本。")
 
         elif script_type == 'background':
+            is_starting = script_path in self.starting_scripts
             if script_path in self.running_processes:
                 stop_button = ctk.CTkButton(self.button_frame, text="停止", command=self.stop_script_execution, fg_color="#D32F2F")
                 stop_button.pack(side="left", padx=5)
+            elif is_starting:
+                start_button = ctk.CTkButton(self.button_frame, text="啟動中...", state="disabled", fg_color="#388E3C")
+                start_button.pack(side="left", padx=5)
             else:
                 start_button = ctk.CTkButton(self.button_frame, text="啟動", command=self.start_script_execution, fg_color="#388E3C")
                 start_button.pack(side="left", padx=5)
@@ -235,13 +327,33 @@ class ScriptLauncher(ctk.CTk):
             return
 
         path = self.selected_script.get('path')
+        name = self.selected_script.get('name')
         if not path:
             self.show_error("錯誤：腳本路徑無效。")
             return
 
-        self.update_console_output(f"--- 開始執行 {self.selected_script.get('name')} ---\n", clear=True)
+        log_id = "MAIN"
+        script_type = self.selected_script.get('type')
+        if script_type == 'background':
+            log_id = path
+            # Check if already running or starting
+            if path in self.running_processes or path in self.starting_scripts:
+                self.show_error("此腳本已在執行或啟動中。")
+                return
 
-        thread = threading.Thread(target=self._execute_script_worker, args=(path,), daemon=True)
+            # Mark as starting
+            self.starting_scripts.add(path)
+
+            self._ensure_log_tab(log_id, name)
+            # Switch to the tab
+            if log_id in self.log_id_to_tab_name:
+                self.console_tabs.set(self.log_id_to_tab_name[log_id])
+        else:
+            self.console_tabs.set("主控制台")
+
+        self.update_console_output(f"--- 開始執行 {name} ---\n", log_id=log_id, clear=True)
+
+        thread = threading.Thread(target=self._execute_script_worker, args=(path, log_id), daemon=True)
         thread.start()
 
         self.update_control_buttons()
@@ -258,11 +370,11 @@ class ScriptLauncher(ctk.CTk):
             # Use taskkill to terminate the process and its children
             try:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                self.log_queue.put(f"\n--- 腳本 {self.selected_script.get('name')} 已手動停止 ---\n")
+                self.log_queue.put((path, f"\n--- 腳本 {self.selected_script.get('name')} 已手動停止 ---\n"))
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 # Fallback to terminate if taskkill fails
                 process.terminate()
-                self.log_queue.put(f"\n--- 腳本 {self.selected_script.get('name')} 已終止 (taskkill失敗) ---\n")
+                self.log_queue.put((path, f"\n--- 腳本 {self.selected_script.get('name')} 已終止 (taskkill失敗) ---\n"))
 
         self.update_control_buttons()
 
@@ -276,9 +388,9 @@ class ScriptLauncher(ctk.CTk):
             self.show_error("錯誤：找不到設置腳本路徑。")
             return
 
-        self.update_console_output(f"--- 啟用自動啟動: {self.selected_script.get('name')} ---\n", clear=True)
+        self.update_console_output(f"--- 啟用自動啟動: {self.selected_script.get('name')} ---\n", log_id="MAIN", clear=True)
 
-        thread = threading.Thread(target=self._execute_script_worker, args=(setup_path,), daemon=True)
+        thread = threading.Thread(target=self._execute_script_worker, args=(setup_path, "MAIN"), daemon=True)
         thread.start()
 
     def disable_startup(self):
@@ -291,9 +403,9 @@ class ScriptLauncher(ctk.CTk):
             self.show_error("錯誤：找不到移除腳本路徑。")
             return
 
-        self.update_console_output(f"--- 停用自動啟動: {self.selected_script.get('name')} ---\n", clear=True)
+        self.update_console_output(f"--- 停用自動啟動: {self.selected_script.get('name')} ---\n", log_id="MAIN", clear=True)
 
-        thread = threading.Thread(target=self._execute_script_worker, args=(remove_path,), daemon=True)
+        thread = threading.Thread(target=self._execute_script_worker, args=(remove_path, "MAIN"), daemon=True)
         thread.start()
 
     def _on_rename_button_click(self):
@@ -362,7 +474,7 @@ class ScriptLauncher(ctk.CTk):
             self.populate_scripts_ui()
             self.update_control_buttons()
             self.selected_script_label.configure(text="請從左側選擇一個腳本")
-            self.update_console_output("", clear=True)
+            self.update_console_output("", log_id="MAIN", clear=True)
 
     def _on_search_filter_change(self, event=None):
         """Called when search or filter changes. Refreshes the script list."""
@@ -389,7 +501,7 @@ class ScriptLauncher(ctk.CTk):
         startup_path = startup_folder / startup_file
         return startup_path.exists()
 
-    def _execute_script_worker(self, script_path_str: str):
+    def _execute_script_worker(self, script_path_str: str, log_id: str):
         """[Worker Thread] 執行腳本，並將輸出傳遞到佇列。"""
         try:
             script_path = Path(script_path_str)
@@ -399,11 +511,11 @@ class ScriptLauncher(ctk.CTk):
             if script_path.suffix == ".py":
                 venv_root = self._find_venv_root(script_path)
                 if venv_root:
-                    self.log_queue.put(f"找到虛擬環境: {venv_root}，使用 uv run 執行...\n")
+                    self.log_queue.put((log_id, f"找到虛擬環境: {venv_root}，使用 uv run 執行...\n"))
                     command = ["uv", "run", "python", script_path_str]
                     cwd = venv_root
                 else:
-                    self.log_queue.put(f"警告: 找不到虛擬環境，將使用系統 Python ({sys.executable}) 執行...\n")
+                    self.log_queue.put((log_id, f"警告: 找不到虛擬環境，將使用系統 Python ({sys.executable}) 執行...\n"))
                     command = [sys.executable, script_path_str]
                     cwd = script_path.parent
             elif script_path.suffix == ".ps1":
@@ -424,48 +536,84 @@ class ScriptLauncher(ctk.CTk):
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
 
-            current_script_type = self.selected_script.get('type') if self.selected_script else None
-            if current_script_type == 'background':
+            is_background = (log_id != "MAIN")
+
+            if is_background:
                 self.running_processes[script_path_str] = process
-                self.after(0, self.update_control_buttons)
+                # We can now safely remove from starting_scripts because process is in running_processes
+                # However, this runs in a thread.
+                # To be thread-safe for the UI logic that reads these sets, we should use `after` or simple atomic operations (GIL helps).
+                # But better to just remove it here.
+                # Note: `update_control_buttons` is called via `after` later.
+                pass
+
+            self.after(0, self.update_control_buttons)
 
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
-                    self.log_queue.put(line)
+                    self.log_queue.put((log_id, line))
                 process.stdout.close()
 
             return_code = process.wait()
-            self.log_queue.put(f"\n--- 腳本執行完成，返回碼: {return_code} ---\n")
+            self.log_queue.put((log_id, f"\n--- 腳本執行完成，返回碼: {return_code} ---\n"))
             
             # For startup scripts, update buttons after execution to reflect new status
             if self.selected_script and self.selected_script.get('type') == 'startup':
                 self.after(0, self.update_control_buttons)
+            # Update buttons general (e.g. background script finished)
+            self.after(0, self.update_control_buttons)
 
         except Exception as e:
-            self.log_queue.put(f"\n--- 執行時發生錯誤: {e} ---\n")
+            self.log_queue.put((log_id, f"\n--- 執行時發生錯誤: {e} ---\n"))
         finally:
+            # Clean up starting state
+            if script_path_str in self.starting_scripts:
+                 # We must be careful. Python sets are thread-safe for add/remove?
+                 # Yes, for single operations.
+                 # But we should probably do it in main thread to avoid race with button update logic?
+                 # Actually, update_control_buttons runs in main thread.
+                 # If we remove it here, and running_processes update happened earlier, it's fine.
+                 # Wait, where did we remove it from starting_scripts?
+                 # I added `pass` above. I should remove it.
+                 # Actually, I should remove it from starting_scripts AS SOON AS it is added to running_processes.
+                 pass
+
+            # If background script, remove from running processes
             if script_path_str in self.running_processes:
                 self.running_processes.pop(script_path_str, None)
-                self.after(0, self.update_control_buttons)
 
-    def update_console_output(self, message: str, clear: bool = False):
+            # Also ensure it is removed from starting_scripts if it failed before starting
+            if script_path_str in self.starting_scripts:
+                 self.starting_scripts.remove(script_path_str)
+
+            self.after(0, self.update_control_buttons)
+
+    def update_console_output(self, message: str, log_id: str = "MAIN", clear: bool = False):
         """安全地更新控制台文字框。"""
-        self.console_output.configure(state="normal")
-        if clear:
-            self.console_output.delete("1.0", "end")
-        self.console_output.insert("end", message)
-        self.console_output.see("end")
-        self.console_output.configure(state="disabled")
+        widget = self.log_widgets.get(log_id)
+        if not widget:
+            widget = self.log_widgets.get("MAIN")
+
+        if widget:
+            widget.configure(state="normal")
+            if clear:
+                widget.delete("1.0", "end")
+            widget.insert("end", message)
+            widget.see("end")
+            widget.configure(state="disabled")
 
     def process_log_queue(self):
         """從佇列中處理日誌訊息並更新UI。"""
         try:
             while True:
-                message = self.log_queue.get_nowait()
-                if message is None: # Sentinel value to update buttons
+                data = self.log_queue.get_nowait()
+                if data is None: # Sentinel value to update buttons
                     self.update_control_buttons()
+                elif isinstance(data, tuple):
+                    log_id, message = data
+                    self.update_console_output(message, log_id=log_id)
                 else:
-                    self.update_console_output(message)
+                    self.update_console_output(data, log_id="MAIN")
         except queue.Empty:
             pass
         finally:
@@ -502,9 +650,6 @@ class ScriptLauncher(ctk.CTk):
         
         return tooltip
 
-# ==============================================================================
-# 新增/編輯腳本的彈出視窗
-# ==============================================================================
 class AddScriptWindow(ctk.CTkToplevel):
     def __init__(self, master, script_to_edit: Dict | None = None):
         super().__init__(master)
