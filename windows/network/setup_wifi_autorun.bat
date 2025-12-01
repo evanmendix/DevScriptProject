@@ -3,9 +3,9 @@ setlocal enabledelayedexpansion
 
 REM Get script locations
 set "startup_folder=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-set "shortcut_path=%startup_folder%\Check_WiFi2_ORBI.vbs"
+set "shortcut_path=%startup_folder%\Check_WiFi3_ORBI.vbs"
 echo Shortcut path: %shortcut_path%
-set "script_path=%~dp0check_wifi2.bat"
+set "script_path=%~dp0check_wifi.bat"
 
 REM Create VBS script
 (
