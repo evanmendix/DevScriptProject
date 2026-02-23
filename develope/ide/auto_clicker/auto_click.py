@@ -17,9 +17,10 @@ import os
 import sys
 from pathlib import Path
 import argparse
+import re
 
 class AutoClicker:
-    def __init__(self, target_dir="target_images", confidence=0.8, check_interval=1.0, screen_region=None, scroll_after_click=False, scroll_amount=3):
+    def __init__(self, target_dir="target_images", confidence=0.8, check_interval=3.0, screen_region=None, scroll_after_click=False, scroll_amount=3):
         """
         初始化自動點擊器
         
@@ -71,49 +72,122 @@ class AutoClicker:
             print(f"❌ 目標圖片目錄不存在: {self.target_dir}")
             return []
             
-        image_files = []
-        for ext in ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.gif']:
-            image_files.extend(self.target_dir.glob(ext))
+        image_entries = []
+        patterns = ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.gif']
+        for ext in patterns:
+            image_entries.extend(
+                {
+                    "path": img,
+                    "confidence": self.extract_confidence_from_path(img),
+                    "click_ratio": self.extract_click_ratio_from_path(img)
+                }
+                for img in self.target_dir.rglob(ext)
+            )
             
-        if not image_files:
+        if not image_entries:
             print(f"❌ 在 {self.target_dir} 中沒有找到圖片檔案")
             print("請將目標圖片放入該目錄中 (支援 .png, .jpg, .jpeg, .bmp, .gif)")
             return []
             
-        print(f"📸 找到 {len(image_files)} 個目標圖片:")
-        for img in image_files:
-            print(f"   - {img.name}")
+        print(f"📸 找到 {len(image_entries)} 個目標圖片:")
+        for entry in image_entries:
+            confidence_info = (
+                f" (指定信心度: {entry['confidence']})"
+                if entry["confidence"] is not None else ""
+            )
+            click_ratio_info = (
+                f" (點擊比例: X={entry['click_ratio'][0]*100:.0f}% Y={entry['click_ratio'][1]*100:.0f}%)"
+                if entry["click_ratio"] is not None else ""
+            )
+            print(
+                f"   - {entry['path'].relative_to(self.target_dir)}"
+                f"{confidence_info}{click_ratio_info}"
+            )
         print()
         
-        return image_files
+        return image_entries
+
+    def extract_confidence_from_path(self, image_path: Path):
+        """從目錄名稱推導圖片信心度設定"""
+        try:
+            relative_parts = image_path.relative_to(self.target_dir).parts[:-1]
+        except ValueError:
+            # 圖片不在 target_dir 中
+            return None
+        pattern = re.compile(r"conf(?:idence)?[_-]?([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+        for part in relative_parts:
+            match = pattern.match(part)
+            if not match:
+                continue
+            value = float(match.group(1))
+            if value > 1:
+                value /= 100
+            return max(0.0, min(value, 1.0))
+        return None
     
-    def find_and_click_image(self, image_path):
+    def extract_click_ratio_from_path(self, image_path: Path):
+        """從目錄名稱推導圖片點擊比例設定 (X/Y 介於 0-1)"""
+        try:
+            relative_parts = image_path.relative_to(self.target_dir).parts[:-1]
+        except ValueError:
+            return None
+        pattern = re.compile(
+            r"click[_-]?x([0-9]+(?:\.[0-9]+)?)[_-]?y([0-9]+(?:\.[0-9]+)?)",
+            re.IGNORECASE
+        )
+        for part in relative_parts:
+            match = pattern.search(part)
+            if not match:
+                continue
+            x_val = float(match.group(1))
+            y_val = float(match.group(2))
+            if x_val > 1:
+                x_val /= 100
+            if y_val > 1:
+                y_val /= 100
+            return (
+                max(0.0, min(x_val, 1.0)),
+                max(0.0, min(y_val, 1.0))
+            )
+        return None
+    
+    def find_and_click_image(self, image_path, custom_confidence=None, click_ratio=None):
         """
         尋找並點擊指定圖片
         
         Args:
             image_path: 圖片路徑
+            custom_confidence: 自訂信心度（覆蓋預設值）
+            click_ratio: (x_ratio, y_ratio) 介於 0-1 的相對點擊位置
             
         Returns:
             bool: 是否成功找到並點擊
         """
         try:
+            # 使用自訂信心度或預設信心度
+            confidence = custom_confidence if custom_confidence is not None else self.confidence
+            if click_ratio is None:
+                click_ratio = (0.5, 0.5)
+            x_ratio = max(0.0, min(click_ratio[0], 1.0))
+            y_ratio = max(0.0, min(click_ratio[1], 1.0))
+            
             # 在指定螢幕區域內尋找圖片
             location = pyautogui.locateOnScreen(
                 str(image_path), 
-                confidence=self.confidence,
+                confidence=confidence,
                 region=self.screen_region  # 限制檢查區域
             )
             
             if location:
-                # 取得圖片中心位置
-                center = pyautogui.center(location)
-                x, y = center.x, center.y
+                # 依照指定比例計算點擊位置
+                x = int(location.left + location.width * x_ratio)
+                y = int(location.top + location.height * y_ratio)
                 
                 # 顯示更詳細的識別資訊
                 print(f"✅ 找到圖片 {image_path.name} 在位置 ({x}, {y})")
                 print(f"   圖片尺寸: {location.width}x{location.height}")
-                print(f"   信心度設定: {self.confidence}")
+                print(f"   信心度設定: {confidence}")
+                print(f"   點擊比例: X={x_ratio*100:.1f}% Y={y_ratio*100:.1f}%")
                 
                 # 除錯模式：截圖並標記識別區域
                 if hasattr(self, 'debug_mode') and self.debug_mode:
@@ -154,8 +228,18 @@ class AutoClicker:
                 found_any = False
                 
                 # 檢查每個目標圖片
-                for image_path in target_images:
-                    if self.find_and_click_image(image_path):
+                for image_entry in target_images:
+                    image_path = image_entry["path"]
+                    # 依目錄配置信心度，若無則維持原有啟發式
+                    custom_confidence = image_entry.get("confidence")
+                    if custom_confidence is None:
+                        if "scroll_down" in image_path.name.lower():
+                            custom_confidence = 0.7
+                        elif "antigravity_start" in image_path.name.lower():
+                            custom_confidence = 0.6
+                    click_ratio = image_entry.get("click_ratio")
+                    
+                    if self.find_and_click_image(image_path, custom_confidence, click_ratio):
                         click_count += 1
                         found_any = True
                         # 點擊後稍作等待，避免重複點擊
@@ -190,7 +274,8 @@ class AutoClicker:
         screenshot.save(screenshot_path)
         print(f"📸 已截圖並儲存為: {screenshot_path}")
         
-        for image_path in target_images:
+        for entry in target_images:
+            image_path = entry["path"]
             print(f"\n🔍 檢查圖片: {image_path.name}")
             
             try:
@@ -285,8 +370,8 @@ def main():
     parser.add_argument(
         "--interval", 
         type=float, 
-        default=1.0,
-        help="檢查間隔時間（秒）(預設: 1.0)"
+        default=3.0,
+        help="檢查間隔時間（秒）(預設: 3.0)"
     )
     parser.add_argument(
         "--region",
@@ -364,8 +449,8 @@ def main():
         # 詳細分析模式
         target_images = clicker.load_target_images()
         if target_images:
-            for image_path in target_images:
-                clicker.debug_detailed_analysis(image_path)
+            for entry in target_images:
+                clicker.debug_detailed_analysis(entry["path"])
     else:
         clicker.run()
 
