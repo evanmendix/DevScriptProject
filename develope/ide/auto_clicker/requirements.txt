@@ -1,0 +1,4 @@
+# 自動點擊腳本所需套件
+pyautogui>=0.9.54
+Pillow>=9.0.0
+opencv-python>=4.5.0

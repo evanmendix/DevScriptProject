@@ -5,6 +5,8 @@ description = "Windows Script Launcher GUI"
 requires-python = ">=3.13"
 dependencies = [
     "customtkinter>=5.2.2",
-    "pillow>=10.2.0"
+    "pillow>=10.2.0",
+    "pyautogui>=0.9.54",
+    "opencv-python>=4.5.0"
 ]
 

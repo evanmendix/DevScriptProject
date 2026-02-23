@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""
+自動圖片識別點擊腳本
+當螢幕上出現指定圖片時，自動點擊該圖片位置
+
+使用方法:
+1. 將目標圖片放入 target_images/ 目錄
+2. 執行 python auto_click.py
+3. 按 Ctrl+C 停止腳本
+
+作者: Auto-generated
+"""
+
+import pyautogui
+import time
+import os
+import sys
+from pathlib import Path
+import argparse
+
+class AutoClicker:
+    def __init__(self, target_dir="target_images", confidence=0.8, check_interval=1.0, screen_region=None, scroll_after_click=False, scroll_amount=3):
+        """
+        初始化自動點擊器
+        
+        Args:
+            target_dir: 目標圖片目錄
+            confidence: 圖片識別信心度 (0.0-1.0)
+            check_interval: 檢查間隔時間（秒）
+            screen_region: 螢幕檢查區域 (left, top, width, height)
+            scroll_after_click: 點擊後是否滾輪滾動
+            scroll_amount: 滾輪滾動量（正數向下，負數向上）
+        """
+        # 取得腳本所在目錄，確保相對路徑正確
+        script_dir = Path(__file__).parent
+        self.target_dir = script_dir / target_dir
+        self.confidence = confidence
+        self.check_interval = check_interval
+        self.running = True
+        self.scroll_after_click = scroll_after_click
+        self.scroll_amount = scroll_amount
+        
+        # 設定螢幕檢查區域（預設為右方 2/3）
+        if screen_region is None:
+            screen_width, screen_height = pyautogui.size()
+            left = screen_width // 3  # 從 1/3 處開始
+            top = 0
+            width = screen_width - left  # 剩餘的 2/3 寬度
+            height = screen_height
+            self.screen_region = (left, top, width, height)
+        else:
+            self.screen_region = screen_region
+        
+        # 設定 pyautogui 安全設定
+        pyautogui.FAILSAFE = True  # 滑鼠移動到左上角時停止程式
+        pyautogui.PAUSE = 0.05     # 每個操作後暫停 0.05 秒
+        
+        print(f"🖱️  自動點擊器已啟動")
+        print(f"📁 目標圖片目錄: {self.target_dir.absolute()}")
+        print(f"🎯 識別信心度: {self.confidence}")
+        print(f"⏱️  檢查間隔: {self.check_interval} 秒")
+        print(f"📺 檢查區域: 右方 2/3 螢幕 {self.screen_region}")
+        if self.scroll_after_click:
+            print(f"📜 點擊後滾輪: 向下 {self.scroll_amount} 格")
+        print(f"🛑 按 Ctrl+C 停止腳本")
+        print("-" * 50)
+        
+    def load_target_images(self):
+        """載入目標圖片列表"""
+        if not self.target_dir.exists():
+            print(f"❌ 目標圖片目錄不存在: {self.target_dir}")
+            return []
+            
+        image_files = []
+        for ext in ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.gif']:
+            image_files.extend(self.target_dir.glob(ext))
+            
+        if not image_files:
+            print(f"❌ 在 {self.target_dir} 中沒有找到圖片檔案")
+            print("請將目標圖片放入該目錄中 (支援 .png, .jpg, .jpeg, .bmp, .gif)")
+            return []
+            
+        print(f"📸 找到 {len(image_files)} 個目標圖片:")
+        for img in image_files:
+            print(f"   - {img.name}")
+        print()
+        
+        return image_files
+    
+    def find_and_click_image(self, image_path):
+        """
+        尋找並點擊指定圖片
+        
+        Args:
+            image_path: 圖片路徑
+            
+        Returns:
+            bool: 是否成功找到並點擊
+        """
+        try:
+            # 在指定螢幕區域內尋找圖片
+            location = pyautogui.locateOnScreen(
+                str(image_path), 
+                confidence=self.confidence,
+                region=self.screen_region  # 限制檢查區域
+            )
+            
+            if location:
+                # 取得圖片中心位置
+                center = pyautogui.center(location)
+                x, y = center.x, center.y
+                
+                # 顯示更詳細的識別資訊
+                print(f"✅ 找到圖片 {image_path.name} 在位置 ({x}, {y})")
+                print(f"   圖片尺寸: {location.width}x{location.height}")
+                print(f"   信心度設定: {self.confidence}")
+                
+                # 除錯模式：截圖並標記識別區域
+                if hasattr(self, 'debug_mode') and self.debug_mode:
+                    self.debug_screenshot(location, image_path.name)
+                
+                # 直接點擊圖片位置，不移動滑鼠
+                pyautogui.click(x, y)
+                
+                # 點擊後滾輪滾動
+                if self.scroll_after_click:
+                    pyautogui.scroll(self.scroll_amount)
+                    print(f"📜 已向下滾動 {self.scroll_amount} 格")
+                
+                print(f"🖱️  已點擊位置 ({x}, {y})")
+                return True
+            else:
+                return False
+                
+        except pyautogui.ImageNotFoundException:
+            return False
+        except Exception as e:
+            print(f"❌ 處理圖片 {image_path.name} 時發生錯誤: {e}")
+            return False
+    
+    def run(self):
+        """執行自動點擊主循環"""
+        target_images = self.load_target_images()
+        
+        if not target_images:
+            print("❌ 沒有可用的目標圖片，程式結束")
+            return
+        
+        click_count = 0
+        start_time = time.time()
+        
+        try:
+            while self.running:
+                found_any = False
+                
+                # 檢查每個目標圖片
+                for image_path in target_images:
+                    if self.find_and_click_image(image_path):
+                        click_count += 1
+                        found_any = True
+                        # 點擊後稍作等待，避免重複點擊
+                        time.sleep(0.2)
+                        break  # 找到一個就重新開始檢查
+                
+                if not found_any:
+                    # 沒找到任何圖片，等待下次檢查
+                    time.sleep(self.check_interval)
+                else:
+                    print(f"📊 總點擊次數: {click_count} | 運行時間: {int(time.time() - start_time)}秒")
+                    
+        except KeyboardInterrupt:
+            print("\n🛑 使用者中斷，程式結束")
+        finally:
+            print(f"📈 最終統計: 總共點擊 {click_count} 次，運行 {int(time.time() - start_time)} 秒")
+    
+    def test_mode(self):
+        """測試模式：截圖並檢查識別結果"""
+        target_images = self.load_target_images()
+        
+        if not target_images:
+            print("❌ 沒有可用的目標圖片，程式結束")
+            return
+        
+        print("🔍 測試模式：檢查識別結果（不會實際點擊）")
+        print("=" * 50)
+        
+        # 截圖
+        screenshot = pyautogui.screenshot()
+        screenshot_path = "test_screenshot.png"
+        screenshot.save(screenshot_path)
+        print(f"📸 已截圖並儲存為: {screenshot_path}")
+        
+        for image_path in target_images:
+            print(f"\n🔍 檢查圖片: {image_path.name}")
+            
+            try:
+                # 嘗試不同信心度
+                for confidence in [0.9, 0.8, 0.7, 0.6]:
+                    try:
+                        location = pyautogui.locateOnScreen(
+                            str(image_path), 
+                            confidence=confidence
+                        )
+                        
+                        if location:
+                            center = pyautogui.center(location)
+                            print(f"   ✅ 信心度 {confidence}: 找到在位置 ({center.x}, {center.y})")
+                            print(f"   📐 尺寸: {location.width}x{location.height}")
+                            break
+                        else:
+                            print(f"   ❌ 信心度 {confidence}: 未找到")
+                    except pyautogui.ImageNotFoundException:
+                        print(f"   ❌ 信心度 {confidence}: 未找到")
+                        
+            except Exception as e:
+                print(f"   ❌ 錯誤: {e}")
+        
+        print(f"\n💡 提示: 您可以查看截圖 {screenshot_path} 來確認螢幕內容")
+    
+    def debug_detailed_analysis(self, image_path):
+        """詳細除錯分析：找出所有可能的匹配位置"""
+        try:
+            import cv2
+            import numpy as np
+            
+            # 讀取目標圖片
+            target_img = cv2.imread(str(image_path))
+            target_gray = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+            
+            # 截圖
+            screenshot = pyautogui.screenshot()
+            screenshot_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            screenshot_gray = cv2.cvtColor(screenshot_cv, cv2.COLOR_BGR2GRAY)
+            
+            # 限制檢查區域
+            left, top, width, height = self.screen_region
+            region = screenshot_gray[top:top+height, left:left+width]
+            
+            print(f"🔍 詳細分析圖片: {image_path.name}")
+            print(f"   目標圖片尺寸: {target_img.shape[1]}x{target_img.shape[0]}")
+            print(f"   檢查區域: {width}x{height}")
+            
+            # 嘗試不同匹配方法
+            methods = ['cv2.TM_CCOEFF_NORMED', 'cv2.TM_CCORR_NORMED', 'cv2.TM_SQDIFF_NORMED']
+            
+            for method_name in methods:
+                method = eval(method_name)
+                result = cv2.matchTemplate(region, target_gray, method)
+                
+                if method == cv2.TM_SQDIFF_NORMED:
+                    locations = np.where(result <= 0.3)  # SQDIFF 越小越好
+                else:
+                    locations = np.where(result >= 0.7)  # 其他方法越大越好
+                
+                if len(locations[0]) > 0:
+                    print(f"   ✅ {method_name}: 找到 {len(locations[0])} 個可能匹配")
+                    
+                    # 顯示前3個最佳匹配位置
+                    for i in range(min(3, len(locations[0]))):
+                        y, x = locations[0][i], locations[1][i]
+                        confidence = result[y, x] if method != cv2.TM_SQDIFF_NORMED else 1 - result[y, x]
+                        print(f"      位置 {i+1}: ({left+x}, {top+y}) 信心度: {confidence:.3f}")
+                else:
+                    print(f"   ❌ {method_name}: 無匹配")
+            
+        except ImportError:
+            print("   ⚠️  需要安裝 opencv-python 進行詳細分析")
+        except Exception as e:
+            print(f"   ❌ 分析失敗: {e}")
+
+def main():
+    """主程式入口"""
+    parser = argparse.ArgumentParser(description="自動圖片識別點擊腳本")
+    parser.add_argument(
+        "--target-dir", 
+        default="target_images",
+        help="目標圖片目錄 (預設: target_images)"
+    )
+    parser.add_argument(
+        "--confidence", 
+        type=float, 
+        default=0.8,
+        help="圖片識別信心度 0.0-1.0 (預設: 0.8)"
+    )
+    parser.add_argument(
+        "--interval", 
+        type=float, 
+        default=1.0,
+        help="檢查間隔時間（秒）(預設: 1.0)"
+    )
+    parser.add_argument(
+        "--region",
+        type=str,
+        help="螢幕檢查區域，格式: left,top,width,height (預設: 右方 2/3)"
+    )
+    parser.add_argument(
+        "--scroll",
+        action="store_true",
+        help="點擊後滾輪向下滾動"
+    )
+    parser.add_argument(
+        "--scroll-amount",
+        type=int,
+        default=3,
+        help="滾輪滾動量（預設: 3 格向下）"
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="測試模式：截圖並檢查識別結果，不實際點擊"
+    )
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help="詳細分析模式：分析所有可能的匹配位置"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="除錯模式：儲存標記識別區域的截圖"
+    )
+    
+    args = parser.parse_args()
+    
+    # 驗證參數
+    if not 0.0 <= args.confidence <= 1.0:
+        print("❌ 信心度必須在 0.0 到 1.0 之間")
+        sys.exit(1)
+    
+    if args.interval <= 0:
+        print("❌ 檢查間隔時間必須大於 0")
+        sys.exit(1)
+    
+    # 解析螢幕區域參數
+    screen_region = None
+    if args.region:
+        try:
+            region_parts = [int(x.strip()) for x in args.region.split(',')]
+            if len(region_parts) != 4:
+                raise ValueError("區域參數需要 4 個數值")
+            screen_region = tuple(region_parts)
+        except ValueError as e:
+            print(f"❌ 區域參數格式錯誤: {e}")
+            print("正確格式: left,top,width,height")
+            sys.exit(1)
+    
+    # 建立並執行自動點擊器
+    clicker = AutoClicker(
+        target_dir=args.target_dir,
+        confidence=args.confidence,
+        check_interval=args.interval,
+        screen_region=screen_region,
+        scroll_after_click=args.scroll,
+        scroll_amount=args.scroll_amount
+    )
+    
+    # 設定除錯模式
+    if args.debug:
+        clicker.debug_mode = True
+    
+    if args.test_mode:
+        clicker.test_mode()
+    elif args.analyze:
+        # 詳細分析模式
+        target_images = clicker.load_target_images()
+        if target_images:
+            for image_path in target_images:
+                clicker.debug_detailed_analysis(image_path)
+    else:
+        clicker.run()
+
+if __name__ == "__main__":
+    main()
