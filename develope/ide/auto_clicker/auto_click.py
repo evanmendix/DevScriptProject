@@ -20,7 +20,7 @@ import argparse
 import re
 
 class AutoClicker:
-    def __init__(self, target_dir="target_images", confidence=0.8, check_interval=3.0, screen_region=None, scroll_after_click=False, scroll_amount=3):
+    def __init__(self, target_dir="target_images", confidence=0.8, check_interval=3.0, screen_region=None, scroll_after_click=False, scroll_amount=3, monitor_index=None):
         """
         初始化自動點擊器
         
@@ -31,6 +31,7 @@ class AutoClicker:
             screen_region: 螢幕檢查區域 (left, top, width, height)
             scroll_after_click: 點擊後是否滾輪滾動
             scroll_amount: 滾輪滾動量（正數向下，負數向上）
+            monitor_index: 指定螢幕索引（多螢幕支援，None 表示所有螢幕）
         """
         # 取得腳本所在目錄，確保相對路徑正確
         script_dir = Path(__file__).parent
@@ -40,14 +41,15 @@ class AutoClicker:
         self.running = True
         self.scroll_after_click = scroll_after_click
         self.scroll_amount = scroll_amount
+        self.monitor_index = monitor_index
         
-        # 設定螢幕檢查區域（預設為右方 2/3）
+        # 設定螢幕檢查區域（預設為右邊 1/3，下面 2/3）
         if screen_region is None:
             screen_width, screen_height = pyautogui.size()
-            left = screen_width // 3  # 從 1/3 處開始
-            top = 0
-            width = screen_width - left  # 剩餘的 2/3 寬度
-            height = screen_height
+            left = screen_width * 2 // 3  # 從 2/3 處開始（右邊 1/3）
+            top = screen_height // 3      # 從 1/3 處開始（下面 2/3）
+            width = screen_width - left    # 剩餘的 1/3 寬度
+            height = screen_height - top   # 剩餘的 2/3 高度
             self.screen_region = (left, top, width, height)
         else:
             self.screen_region = screen_region
@@ -60,7 +62,9 @@ class AutoClicker:
         print(f"📁 目標圖片目錄: {self.target_dir.absolute()}")
         print(f"🎯 識別信心度: {self.confidence}")
         print(f"⏱️  檢查間隔: {self.check_interval} 秒")
-        print(f"📺 檢查區域: 右方 2/3 螢幕 {self.screen_region}")
+        print(f"📺 檢查區域: 右邊 1/3，下面 2/3 螢幕 {self.screen_region}")
+        if self.monitor_index is not None:
+            print(f"🖥️  指定螢幕: {self.monitor_index}")
         if self.scroll_after_click:
             print(f"📜 點擊後滾輪: 向下 {self.scroll_amount} 格")
         print(f"🛑 按 Ctrl+C 停止腳本")
@@ -125,6 +129,25 @@ class AutoClicker:
             return max(0.0, min(value, 1.0))
         return None
     
+    def get_monitor_bounds(self, monitor_index):
+        """取得指定螢幕的邊界資訊"""
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            screens = root.winfo_screeninfo()
+            root.destroy()
+            
+            if 0 <= monitor_index < len(screens):
+                screen = screens[monitor_index]
+                # 螢幕資訊格式: widthxheight+xoffset+yoffset
+                match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', screen)
+                if match:
+                    width, height, x_offset, y_offset = map(int, match.groups())
+                    return (x_offset, y_offset, width, height)
+        except Exception as e:
+            print(f"⚠️  無法取得螢幕資訊: {e}")
+        return None
+    
     def extract_click_ratio_from_path(self, image_path: Path):
         """從目錄名稱推導圖片點擊比例設定 (X/Y 介於 0-1)"""
         try:
@@ -177,6 +200,33 @@ class AutoClicker:
                 confidence=confidence,
                 region=self.screen_region  # 限制檢查區域
             )
+            
+            # 如果在指定螢幕上沒找到，且指定了螢幕索引，嘗試在所有螢幕上尋找
+            if not location and self.monitor_index is not None:
+                try:
+                    # 嘗試在指定螢幕上尋找
+                    location = pyautogui.locateOnScreen(
+                        str(image_path), 
+                        confidence=confidence
+                    )
+                    if location:
+                        # 檢查找到的位置是否在目標螢幕範圍內
+                        monitor_bounds = self.get_monitor_bounds(self.monitor_index)
+                        if monitor_bounds:
+                            mx, my, mw, mh = monitor_bounds
+                            # 檢查位置是否在指定螢幕的檢查區域內
+                            check_left = mx + (mw * 2 // 3)
+                            check_top = my + (mh // 3)
+                            check_right = mx + mw
+                            check_bottom = my + mh
+                            
+                            # 如果找到的位置不在目標螢幕的檢查區域內，忽略
+                            if not (check_left <= location.left + location.width/2 <= check_right and
+                                   check_top <= location.top + location.height/2 <= check_bottom):
+                                location = None
+                except Exception:
+                    # 如果多螢幕支援失敗，繼續使用原來的結果
+                    pass
             
             if location:
                 # 依照指定比例計算點擊位置
@@ -376,7 +426,7 @@ def main():
     parser.add_argument(
         "--region",
         type=str,
-        help="螢幕檢查區域，格式: left,top,width,height (預設: 右方 2/3)"
+        help="螢幕檢查區域，格式: left,top,width,height (預設: 右邊 1/3，下面 2/3)"
     )
     parser.add_argument(
         "--scroll",
@@ -398,6 +448,11 @@ def main():
         "--analyze",
         action="store_true",
         help="詳細分析模式：分析所有可能的匹配位置"
+    )
+    parser.add_argument(
+        "--monitor",
+        type=int,
+        help="指定螢幕索引（多螢幕支援，0 為主螢幕）"
     )
     parser.add_argument(
         "--debug",
@@ -436,7 +491,8 @@ def main():
         check_interval=args.interval,
         screen_region=screen_region,
         scroll_after_click=args.scroll,
-        scroll_amount=args.scroll_amount
+        scroll_amount=args.scroll_amount,
+        monitor_index=args.monitor
     )
     
     # 設定除錯模式
