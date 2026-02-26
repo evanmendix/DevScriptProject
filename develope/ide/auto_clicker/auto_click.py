@@ -5,8 +5,14 @@
 
 使用方法:
 1. 將目標圖片放入 target_images/ 目錄
-2. 執行 python auto_click.py
-3. 按 Ctrl+C 停止腳本
+2. 安裝需求套件: pip install -r requirements.txt
+3. 執行 python auto_click.py
+4. 按 Ctrl+C 停止腳本
+
+多螢幕支援:
+- 自動檢測所有連接的螢幕
+- 顯示每個螢幕的位置、尺寸和主螢幕標識
+- 支援跨螢幕的圖片識別和點擊
 
 作者: Auto-generated
 """
@@ -18,6 +24,19 @@ import sys
 from pathlib import Path
 import argparse
 import re
+
+try:
+    import pyautogui._pyautogui_win as win
+    HAS_MULTI_DISPLAY = True
+except ImportError:
+    HAS_MULTI_DISPLAY = False
+
+# 嘗試導入其他多螢幕檢測方法
+try:
+    import screeninfo
+    HAS_SCREENINFO = True
+except ImportError:
+    HAS_SCREENINFO = False
 
 class AutoClicker:
     def __init__(self, target_dir="target_images", confidence=0.8, check_interval=3.0, screen_region=None, scroll_after_click=False, scroll_amount=3):
@@ -41,35 +60,43 @@ class AutoClicker:
         self.scroll_after_click = scroll_after_click
         self.scroll_amount = scroll_amount
         
-        # 設定螢幕檢查區域（預設為右方 2/3）
-        if screen_region is None:
-            screen_width, screen_height = pyautogui.size()
-            left = screen_width // 3  # 從 1/3 處開始
-            top = 0
-            width = screen_width - left  # 剩餘的 2/3 寬度
-            height = screen_height
-            self.screen_region = (left, top, width, height)
-        else:
-            self.screen_region = screen_region
-        
         # 設定 pyautogui 安全設定
         pyautogui.FAILSAFE = True  # 滑鼠移動到左上角時停止程式
         pyautogui.PAUSE = 0.05     # 每個操作後暫停 0.05 秒
         
-        print(f"🖱️  自動點擊器已啟動")
-        print(f"📁 目標圖片目錄: {self.target_dir.absolute()}")
-        print(f"🎯 識別信心度: {self.confidence}")
-        print(f"⏱️  檢查間隔: {self.check_interval} 秒")
-        print(f"📺 檢查區域: 右方 2/3 螢幕 {self.screen_region}")
+        # 檢測並顯示螢幕資訊
+        self.display_info = self.detect_displays()
+        self.print_display_info()
+        
+        # 設定螢幕檢查區域
+        if screen_region is None:
+            # 使用新的螢幕選擇邏輯
+            display_id = getattr(self, 'target_display_id', None)
+            region_type = getattr(self, 'target_region_type', 'right_1_3')
+            self.screen_region = self.get_screen_region_for_display(display_id, region_type)
+            
+            # 顯示使用的螢幕資訊
+            if display_id is not None:
+                print(f"DEBUG: 使用螢幕 {display_id} 的 {region_type} 區域: {self.screen_region}")
+            else:
+                print(f"DEBUG: 使用主螢幕的 {region_type} 區域: {self.screen_region}")
+        else:
+            self.screen_region = screen_region
+        
+        print(f"自動點擊器已啟動")
+        print(f"目標圖片目錄: {self.target_dir.absolute()}")
+        print(f"識別信心度: {self.confidence}")
+        print(f"檢查間隔: {self.check_interval} 秒")
+        print(f"檢查區域: 右方 2/3 螢幕 {self.screen_region}")
         if self.scroll_after_click:
-            print(f"📜 點擊後滾輪: 向下 {self.scroll_amount} 格")
-        print(f"🛑 按 Ctrl+C 停止腳本")
+            print(f"點擊後滾輪: 向下 {self.scroll_amount} 格")
+        print(f"按 Ctrl+C 停止腳本")
         print("-" * 50)
         
     def load_target_images(self):
         """載入目標圖片列表"""
         if not self.target_dir.exists():
-            print(f"❌ 目標圖片目錄不存在: {self.target_dir}")
+            print(f"目標圖片目錄不存在: {self.target_dir}")
             return []
             
         image_entries = []
@@ -85,11 +112,11 @@ class AutoClicker:
             )
             
         if not image_entries:
-            print(f"❌ 在 {self.target_dir} 中沒有找到圖片檔案")
+            print(f"在 {self.target_dir} 中沒有找到圖片檔案")
             print("請將目標圖片放入該目錄中 (支援 .png, .jpg, .jpeg, .bmp, .gif)")
             return []
             
-        print(f"📸 找到 {len(image_entries)} 個目標圖片:")
+        print(f"找到 {len(image_entries)} 個目標圖片:")
         for entry in image_entries:
             confidence_info = (
                 f" (指定信心度: {entry['confidence']})"
@@ -151,6 +178,352 @@ class AutoClicker:
             )
         return None
     
+    def get_screen_region_for_display(self, display_id=None, region_type="right_2_3"):
+        """
+        取得指定螢幕的檢查區域
+        
+        Args:
+            display_id: 螢幕 ID (None 表示主螢幕)
+            region_type: 區域類型 ("right_2_3", "bottom_right", "full", etc.)
+        
+        Returns:
+            tuple: (left, top, width, height)
+        """
+        if display_id is None:
+            # 找出主螢幕
+            for display in self.display_info:
+                if display['is_primary']:
+                    target_display = display
+                    break
+            else:
+                # 如果沒有主螢幕，使用第一個
+                target_display = self.display_info[0] if self.display_info else None
+        else:
+            # 使用指定的螢幕
+            target_display = None
+            for display in self.display_info:
+                if display['id'] == display_id:
+                    target_display = display
+                    break
+        
+        if not target_display:
+            # 回退到整個畫布
+            screen_width, screen_height = pyautogui.size()
+            return (screen_width // 3, 0, screen_width - screen_width // 3, screen_height)
+        
+        left = target_display['left']
+        top = target_display['top']
+        width = target_display['width']
+        height = target_display['height']
+        
+        if region_type == "right_1_3":
+            # 右側 1/3
+            region_left = left + (width // 3 * 2)
+            region_top = top
+            region_width = width // 3
+            region_height = height
+        elif region_type == "right_2_3":
+            # 右側 2/3
+            region_left = left + (width // 3)
+            region_top = top
+            region_width = width - (width // 3)
+            region_height = height
+        elif region_type == "bottom_right":
+            # 右下角 1/3
+            region_left = left + (width // 3 * 2)
+            region_top = top + (height // 3 * 2)
+            region_width = width // 3
+            region_height = height // 3
+        elif region_type == "right_bottom_third":
+            # 右下角 (右側 1/3 + 下方 1/2)
+            region_left = left + (width // 3 * 2)
+            region_top = top + (height // 2)
+            region_width = width // 3
+            region_height = height // 2
+        elif region_type == "bottom_right_quarter":
+            # 右下角 1/4
+            region_left = left + (width // 2)
+            region_top = top + (height // 2)
+            region_width = width // 2
+            region_height = height // 2
+        elif region_type == "bottom_half":
+            # 下半部
+            region_left = left
+            region_top = top + (height // 2)
+            region_width = width
+            region_height = height // 2
+        else:  # "full"
+            # 整個螢幕
+            region_left = left
+            region_top = top
+            region_width = width
+            region_height = height
+        
+        return (region_left, region_top, region_width, region_height)
+    
+    def get_dpi_info(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ('cbSize', wintypes.DWORD),
+                    ('rcMonitor', wintypes.RECT),
+                    ('rcWork', wintypes.RECT),
+                    ('dwFlags', wintypes.DWORD)
+                ]
+            
+            monitors = []
+            def callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
+                info = MONITORINFO()
+                info.cbSize = ctypes.sizeof(MONITORINFO)
+                if ctypes.windll.user32.GetMonitorInfoW(hMonitor, ctypes.byref(info)):
+                    # 取得 DPI 縮放因子
+                    try:
+                        # Windows 8.1+ 支援 GetDpiForMonitor
+                        shcore = ctypes.windll.shcore
+                        dpiX = ctypes.c_uint()
+                        dpiY = ctypes.c_uint()
+                        shcore.GetDpiForMonitor(hMonitor, 0, ctypes.byref(dpiX), ctypes.byref(dpiY))
+                        scale_factor = dpiX.value / 96.0  # 96 DPI 是 100% 縮放
+                        
+                        # 計算實際解析度
+                        actual_width = info.rcMonitor.right - info.rcMonitor.left
+                        actual_height = info.rcMonitor.bottom - info.rcMonitor.top
+                        logical_width = int(actual_width / scale_factor)
+                        logical_height = int(actual_height / scale_factor)
+                        
+                        monitors.append({
+                            'left': info.rcMonitor.left,
+                            'top': info.rcMonitor.top,
+                            'actual_width': actual_width,
+                            'actual_height': actual_height,
+                            'logical_width': logical_width,
+                            'logical_height': logical_height,
+                            'is_primary': bool(info.dwFlags & 1),
+                            'scale_factor': scale_factor,
+                            'dpi': dpiX.value
+                        })
+                    except Exception:
+                        # 如果無法取得 DPI，使用預設值
+                        actual_width = info.rcMonitor.right - info.rcMonitor.left
+                        actual_height = info.rcMonitor.bottom - info.rcMonitor.top
+                        monitors.append({
+                            'left': info.rcMonitor.left,
+                            'top': info.rcMonitor.top,
+                            'actual_width': actual_width,
+                            'actual_height': actual_height,
+                            'logical_width': actual_width,
+                            'logical_height': actual_height,
+                            'is_primary': bool(info.dwFlags & 1),
+                            'scale_factor': 1.0,
+                            'dpi': 96
+                        })
+                return True
+            
+            MONITORENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_ulong, ctypes.c_ulong, ctypes.POINTER(wintypes.RECT), ctypes.c_ulong)
+            ctypes.windll.user32.EnumDisplayMonitors(None, None, MONITORENUMPROC(callback), 0)
+            return monitors
+        except Exception as e:
+            print(f"無法取得 DPI 資訊: {e}")
+            return []
+    
+    def detect_displays(self):
+        """檢測所有螢幕並回傳資訊"""
+        displays = []
+        
+        # 強制使用 screeninfo 函式庫，並修正 DPI 縮放問題
+        if HAS_SCREENINFO:
+            try:
+                monitors = screeninfo.get_monitors()
+                print(f"DEBUG: screeninfo 找到 {len(monitors)} 個螢幕")
+                
+                # 使用 Windows API 取得正確的 DPI 縮放資訊
+                dpi_info = self.get_dpi_info()
+                
+                for i, monitor in enumerate(monitors):
+                    print(f"DEBUG: 螢幕 {i} - {monitor.name}: {monitor.width}x{monitor.height} at ({monitor.x}, {monitor.y})")
+                    
+                    # 檢查是否需要 DPI 修正
+                    actual_width = monitor.width
+                    actual_height = monitor.height
+                    
+                    # 如果有 DPI 資訊，使用實際尺寸
+                    if i < len(dpi_info):
+                        dpi_data = dpi_info[i]
+                        if dpi_data['scale_factor'] != 1.0:
+                            # 使用實際尺寸（物理像素）
+                            actual_width = dpi_data['actual_width']
+                            actual_height = dpi_data['actual_height']
+                            print(f"DEBUG: DPI 修正 - 系統報告尺寸: {actual_width}x{actual_height}, 縮放: {dpi_data['scale_factor']:.2f}")
+                    
+                    displays.append({
+                        'id': i,
+                        'name': monitor.name or f'螢幕 {i+1}',
+                        'left': monitor.x,
+                        'top': monitor.y,
+                        'width': actual_width,
+                        'height': actual_height,
+                        'is_primary': monitor.is_primary,
+                        'logical_width': monitor.width,
+                        'logical_height': monitor.height,
+                        'scale_factor': dpi_info[i]['scale_factor'] if i < len(dpi_info) else 1.0
+                    })
+                return displays
+            except Exception as e:
+                print(f"screeninfo 檢測失敗: {e}")
+        
+        # 如果 screeninfo 失敗，才嘗試其他方法
+        print("DEBUG: screeninfo 不可用，嘗試其他方法")
+        
+        # 嘗試使用 pyautogui 的內建方法
+        if HAS_MULTI_DISPLAY:
+            try:
+                # 使用 pyautogui 的所有螢幕尺寸方法
+                try:
+                    # 嘗試取得所有螢幕資訊
+                    all_screens = pyautogui._pyautogui_win.getAllScreens()
+                    if all_screens and len(all_screens) > 1:
+                        for i, screen in enumerate(all_screens):
+                            displays.append({
+                                'id': i,
+                                'name': f'螢幕 {i+1}',
+                                'left': screen['left'],
+                                'top': screen['top'],
+                                'width': screen['width'],
+                                'height': screen['height'],
+                                'is_primary': screen.get('is_primary', i == 0)
+                            })
+                        return displays
+                except (AttributeError, TypeError):
+                    pass
+                
+                # 嘗試其他方法
+                try:
+                    # 使用 Windows API 透過 ctypes，包含 DPI 感知
+                    import ctypes
+                    from ctypes import wintypes
+                    
+                    class MONITORINFO(ctypes.Structure):
+                        _fields_ = [
+                            ('cbSize', wintypes.DWORD),
+                            ('rcMonitor', wintypes.RECT),
+                            ('rcWork', wintypes.RECT),
+                            ('dwFlags', wintypes.DWORD)
+                        ]
+                    
+                    def get_monitors():
+                        monitors = []
+                        def callback(hMonitor, hdcMonitor, lprcMonitor, dwData):
+                            info = MONITORINFO()
+                            info.cbSize = ctypes.sizeof(MONITORINFO)
+                            if ctypes.windll.user32.GetMonitorInfoW(hMonitor, ctypes.byref(info)):
+                                # 取得 DPI 縮放因子
+                                try:
+                                    # Windows 8.1+ 支援 GetDpiForMonitor
+                                    shcore = ctypes.windll.shcore
+                                    dpiX = ctypes.c_uint()
+                                    dpiY = ctypes.c_uint()
+                                    shcore.GetDpiForMonitor(hMonitor, 0, ctypes.byref(dpiX), ctypes.byref(dpiY))
+                                    scale_factor = dpiX.value / 96.0  # 96 DPI 是 100% 縮放
+                                except:
+                                    scale_factor = 1.0
+                                
+                                monitors.append({
+                                    'left': info.rcMonitor.left,
+                                    'top': info.rcMonitor.top,
+                                    'right': info.rcMonitor.right,
+                                    'bottom': info.rcMonitor.bottom,
+                                    'width': info.rcMonitor.right - info.rcMonitor.left,
+                                    'height': info.rcMonitor.bottom - info.rcMonitor.top,
+                                    'is_primary': bool(info.dwFlags & 1),  # MONITORINFOF_PRIMARY
+                                    'scale_factor': scale_factor
+                                })
+                            return True
+                        
+                        MONITORENUMPROC = ctypes.WINFUNCTYPE(ctypes.BOOL, ctypes.c_ulong, ctypes.c_ulong, ctypes.POINTER(wintypes.RECT), ctypes.c_ulong)
+                        ctypes.windll.user32.EnumDisplayMonitors(None, None, MONITORENUMPROC(callback), 0)
+                        return monitors
+                    
+                    monitors = get_monitors()
+                    for i, monitor in enumerate(monitors):
+                        displays.append({
+                            'id': i,
+                            'name': f'螢幕 {i+1}',
+                            'left': monitor['left'],
+                            'top': monitor['top'],
+                            'width': monitor['width'],
+                            'height': monitor['height'],
+                            'is_primary': monitor['is_primary'],
+                            'scale_factor': monitor.get('scale_factor', 1.0)
+                        })
+                    return displays
+                    
+                except Exception as e:
+                    print(f"Windows API 檢測失敗: {e}")
+                    
+            except Exception as e:
+                print(f"無法取得詳細螢幕資訊: {e}")
+        
+        # 回退到基本方法
+        width, height = pyautogui.size()
+        displays.append({
+            'id': 0,
+            'name': '主要螢幕',
+            'left': 0,
+            'top': 0,
+            'width': width,
+            'height': height,
+            'is_primary': True
+        })
+        
+        return displays
+    
+    def print_display_info(self):
+        """顯示螢幕資訊"""
+        print(f"檢測到 {len(self.display_info)} 個螢幕:")
+        print("-" * 40)
+        
+        for display in self.display_info:
+            primary_mark = " (主螢幕)" if display['is_primary'] else ""
+            print(f"   {display['id']}: {display['name']}{primary_mark}")
+            print(f"      位置: ({display['left']}, {display['top']})")
+            
+            # 檢查是否有 DPI 縮放資訊
+            if 'scale_factor' in display and display['scale_factor'] != 1.0:
+                print(f"      邏輯尺寸: {display['logical_width']} x {display['logical_height']}")
+                print(f"      系統報告尺寸: {display['width']} x {display['height']}")
+                print(f"      DPI 縮放比例: {display['scale_factor']:.2f}")
+            elif 'raw_width' in display and 'raw_height' in display:
+                if display['raw_width'] != display['width'] or display['raw_height'] != display['height']:
+                    print(f"      原始尺寸: {display['raw_width']} x {display['raw_height']}")
+                    print(f"      系統報告尺寸: {display['width']} x {display['height']}")
+                    scale_x = display['width'] / display['raw_width']
+                    scale_y = display['height'] / display['raw_height']
+                    print(f"      縮放比例: X={scale_x:.2f} Y={scale_y:.2f}")
+                else:
+                    print(f"      尺寸: {display['width']} x {display['height']}")
+            else:
+                print(f"      尺寸: {display['width']} x {display['height']}")
+            
+            print(f"      範圍: ({display['left']}, {display['top']}) - ({display['left'] + display['width']}, {display['top'] + display['height']})")
+            print()
+        
+        # 計算總螢幕區域
+        if len(self.display_info) > 1:
+            min_left = min(d['left'] for d in self.display_info)
+            min_top = min(d['top'] for d in self.display_info)
+            max_right = max(d['left'] + d['width'] for d in self.display_info)
+            max_bottom = max(d['top'] + d['height'] for d in self.display_info)
+            total_width = max_right - min_left
+            total_height = max_bottom - min_top
+            
+            print(f"總螢幕區域: {total_width} x {total_height}")
+            print(f"   起始位置: ({min_left}, {min_top})")
+            print(f"   結束位置: ({max_right}, {max_bottom})")
+            print("-" * 40)
+    
     def find_and_click_image(self, image_path, custom_confidence=None, click_ratio=None):
         """
         尋找並點擊指定圖片
@@ -199,9 +572,9 @@ class AutoClicker:
                 # 點擊後滾輪滾動
                 if self.scroll_after_click:
                     pyautogui.scroll(self.scroll_amount)
-                    print(f"📜 已向下滾動 {self.scroll_amount} 格")
+                    print(f"已向下滾動 {self.scroll_amount} 格")
                 
-                print(f"🖱️  已點擊位置 ({x}, {y})")
+                print(f"已點擊位置 ({x}, {y})")
                 return True
             else:
                 return False
@@ -209,7 +582,7 @@ class AutoClicker:
         except pyautogui.ImageNotFoundException:
             return False
         except Exception as e:
-            print(f"❌ 處理圖片 {image_path.name} 時發生錯誤: {e}")
+            print(f"處理圖片 {image_path.name} 時發生錯誤: {e}")
             return False
     
     def run(self):
@@ -265,18 +638,18 @@ class AutoClicker:
             print("❌ 沒有可用的目標圖片，程式結束")
             return
         
-        print("🔍 測試模式：檢查識別結果（不會實際點擊）")
+        print("測試模式：檢查識別結果（不會實際點擊）")
         print("=" * 50)
         
         # 截圖
         screenshot = pyautogui.screenshot()
         screenshot_path = "test_screenshot.png"
         screenshot.save(screenshot_path)
-        print(f"📸 已截圖並儲存為: {screenshot_path}")
+        print(f"已截圖並儲存為: {screenshot_path}")
         
         for entry in target_images:
             image_path = entry["path"]
-            print(f"\n🔍 檢查圖片: {image_path.name}")
+            print(f"\n檢查圖片: {image_path.name}")
             
             try:
                 # 嘗試不同信心度
@@ -284,23 +657,24 @@ class AutoClicker:
                     try:
                         location = pyautogui.locateOnScreen(
                             str(image_path), 
-                            confidence=confidence
+                            confidence=confidence,
+                            region=self.screen_region  # 限制檢查區域
                         )
                         
                         if location:
                             center = pyautogui.center(location)
-                            print(f"   ✅ 信心度 {confidence}: 找到在位置 ({center.x}, {center.y})")
-                            print(f"   📐 尺寸: {location.width}x{location.height}")
+                            print(f"   [信心度 {confidence}]: 找到在位置 ({center.x}, {center.y})")
+                            print(f"   [尺寸]: {location.width}x{location.height}")
                             break
                         else:
-                            print(f"   ❌ 信心度 {confidence}: 未找到")
+                            print(f"   [信心度 {confidence}]: 未找到")
                     except pyautogui.ImageNotFoundException:
-                        print(f"   ❌ 信心度 {confidence}: 未找到")
+                        print(f"   [信心度 {confidence}]: 未找到")
                         
             except Exception as e:
-                print(f"   ❌ 錯誤: {e}")
+                print(f"   [錯誤]: {e}")
         
-        print(f"\n💡 提示: 您可以查看截圖 {screenshot_path} 來確認螢幕內容")
+        print(f"\n提示: 您可以查看截圖 {screenshot_path} 來確認螢幕內容")
     
     def debug_detailed_analysis(self, image_path):
         """詳細除錯分析：找出所有可能的匹配位置"""
@@ -400,6 +774,18 @@ def main():
         help="詳細分析模式：分析所有可能的匹配位置"
     )
     parser.add_argument(
+        "--display",
+        type=int,
+        help="指定要檢查的螢幕 ID (0=第一個螢幕, 1=第二個螢幕, 等等)"
+    )
+    parser.add_argument(
+        "--region-type",
+        type=str,
+        choices=["right_1_3", "right_2_3", "right_bottom_third", "bottom_right", "bottom_right_quarter", "bottom_half", "full"],
+        default="right_1_3",
+        help="螢幕檢查區域類型 (預設: right_1_3)"
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="除錯模式：儲存標記識別區域的截圖"
@@ -438,6 +824,18 @@ def main():
         scroll_after_click=args.scroll,
         scroll_amount=args.scroll_amount
     )
+    
+    # 設定螢幕目標
+    clicker.target_display_id = args.display
+    clicker.target_region_type = args.region_type
+    
+    # 重新計算螢幕區域（如果指定了螢幕參數）
+    if args.display is not None or args.region_type != "right_1_3":
+        clicker.screen_region = clicker.get_screen_region_for_display(args.display, args.region_type)
+        if args.display is not None:
+            print(f"指定螢幕 {args.display} 的 {args.region_type} 區域: {clicker.screen_region}")
+        else:
+            print(f"主螢幕的 {args.region_type} 區域: {clicker.screen_region}")
     
     # 設定除錯模式
     if args.debug:
