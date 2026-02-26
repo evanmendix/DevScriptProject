@@ -75,12 +75,15 @@ class ScriptLauncher(ctk.CTk):
         self.close_tab_button.grid(row=0, column=1, sticky="e")
 
         # Replaced single console_output with tab view
-        self.console_tabs = ctk.CTkTabview(self.control_pane)
+        self.console_tabs = ctk.CTkTabview(self.control_pane, command=self._on_tab_change)
         self.console_tabs.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
         # Store log widgets and tab names
         self.log_widgets: Dict[str, ctk.CTkTextbox] = {}
         self.log_id_to_tab_name: Dict[str, str] = {}
+
+        # Store script list buttons for visual feedback
+        self.script_buttons: Dict[str, ctk.CTkButton] = {}
 
         # Initialize Main Console
         self._ensure_log_tab("MAIN", "主控制台")
@@ -167,6 +170,47 @@ class ScriptLauncher(ctk.CTk):
         del self.log_widgets[target_log_id]
         del self.log_id_to_tab_name[target_log_id]
 
+    def _on_tab_change(self):
+        """當右側 tab 切換時，同步更新左側的腳本選擇。"""
+        current_tab_name = self.console_tabs.get()
+
+        # Find log_id for this tab name
+        target_log_id = None
+        for log_id, name in self.log_id_to_tab_name.items():
+            if name == current_tab_name:
+                target_log_id = log_id
+                break
+
+        if not target_log_id or target_log_id == "MAIN":
+            # If switching to main console, clear selection
+            self.selected_script = None
+            self.selected_script_label.configure(text="主控制台")
+            self.update_control_buttons()
+            self._update_button_highlights()
+            return
+
+        # Find the script that matches this log_id (which is the script path for background scripts)
+        for script in self.scripts_config:
+            if script.get('path') == target_log_id:
+                # Update selected_script without triggering another tab switch
+                self.selected_script = script
+                self.selected_script_label.configure(text=script.get("name", "未命名腳本"))
+                self.update_control_buttons()
+                self._update_button_highlights()
+                break
+
+    def _update_button_highlights(self):
+        """更新左側腳本列表按鈕的視覺狀態，高亮當前選中的腳本。"""
+        selected_path = self.selected_script.get('path') if self.selected_script else None
+
+        for script_path, button in self.script_buttons.items():
+            if script_path == selected_path:
+                # Highlight selected button
+                button.configure(fg_color=("#3B8ED0", "#1F6AA5"))  # Default blue theme colors
+            else:
+                # Reset to default color
+                button.configure(fg_color=("gray75", "gray25"))
+
     def open_add_script_window(self, script_to_edit: Dict | None = None):
         """開啟用於新增/編輯腳本的彈出視窗。"""
         if self.add_script_window is None or not self.add_script_window.winfo_exists():
@@ -233,17 +277,25 @@ class ScriptLauncher(ctk.CTk):
         for widget in self.script_list_frame.winfo_children():
             widget.destroy()
 
+        # Clear button references
+        self.script_buttons.clear()
+
         add_button = ctk.CTkButton(self.script_list_frame, text="＋ 新增腳本", command=self.open_add_script_window)
         add_button.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
 
         for i, script_data in enumerate(filtered_scripts, start=1):
             name = script_data.get("name", "未命名腳本")
+            script_path = script_data.get('path')
             button = ctk.CTkButton(
                 self.script_list_frame,
                 text=name,
                 command=lambda s=script_data: self.select_script(s)
             )
             button.grid(row=i, column=0, padx=10, pady=5, sticky="ew")
+
+            # Store button reference
+            if script_path:
+                self.script_buttons[script_path] = button
 
             tooltip_text = f"路徑: {script_data.get('path', 'N/A')}\n類型: {script_data.get('type', 'N/A')}"
             self.create_tooltip(button, tooltip_text)
@@ -266,6 +318,7 @@ class ScriptLauncher(ctk.CTk):
                 self.console_tabs.set(self.log_id_to_tab_name[path])
 
         self.update_control_buttons()
+        self._update_button_highlights()
 
     def update_control_buttons(self):
         """根據選擇的腳本及其狀態，更新控制按鈕。"""

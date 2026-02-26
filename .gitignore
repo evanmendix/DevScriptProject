@@ -5,6 +5,11 @@
 # Ignore Python virtual environments
 .venv/
 
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
 # Ignore Node.js modules
 node_modules/
 
@@ -19,3 +24,6 @@ Thumbs.db
 *.swp
 *.swo
 *.swn
+
+# Ignore user-specific script configurations
+scripts.json
