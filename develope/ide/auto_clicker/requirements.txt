@@ -2,3 +2,4 @@
 pyautogui>=0.9.54
 Pillow>=9.0.0
 opencv-python>=4.5.0
+screeninfo>=0.8.1
